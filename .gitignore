@@ -1,7 +1,10 @@
-captivateFiltered.json
-package-lock.json
+*.json
+*.csv
+*.mp4
 bundle.js
 node_modules
+
+.ipynb_checkpoints/
 
 # Folder view configuration files
 .DS_Store
