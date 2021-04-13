@@ -10,8 +10,10 @@ import time
 import dlib
 import cv2
 import argparse
+import multiprocessing
+import itertools
 
-# python run_blink_extractor.py --video blink_detection_demo.mp4 --resize-width 720
+# python run_blink_extractor.py --video blink_detection_demo.mp4 --resize-width 720 --threads 6
 # python run_blink_extractor.py --video blink_detection_demo.mp4
 
 def eye_aspect_ratio(eye):
@@ -30,14 +32,13 @@ def eye_aspect_ratio(eye):
     # return the eye aspect ratio
     return ear
 
-def analyze_video_for_blinks(video_filename, resize_width=720):
+def analyze_video_for_blinks(video_filename, resize_width, fps, frames_per_thread, group_number):
 
     frame_data = {}
-    counter = 0
 
-    csv_name = video_filename[:-4] + '_eyeratio.csv'
+    csv_name = video_filename[:-4] + '_eyeratio_' + str(group_number) + '.csv'
 
-    print("[INFO] loading facial landmark predictor...")
+    print("[INFO", group_number, "] loading facial landmark predictor...")
     detector = dlib.get_frontal_face_detector()
     predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
 
@@ -46,22 +47,20 @@ def analyze_video_for_blinks(video_filename, resize_width=720):
     (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
     (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
 
-    # start the video stream thread
-    print("[INFO] starting video stream thread...")
+    # start the video stream thread, move to our chunk starting point
+    print("[INFO", group_number, "] starting video stream thread...")
     vs = cv2.VideoCapture(video_filename)
-
-    total_frames = int(vs.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = vs.get(cv2.CAP_PROP_FPS)
-    print('FPS:',fps,'\tTotal Frames:',total_frames,'\tDuration (s):',total_frames/fps)
+    vs.set(cv2.CAP_PROP_POS_FRAMES, frames_per_thread * group_number)
 
     eye_ratio_data = pd.DataFrame()
 
     time.sleep(1.0)
 
-    # loop over frames from the video stream
-    for fno in range(0, total_frames):
+    # loop over frames from the video stream in our chunk
+    for fno in range(frames_per_thread):
 
-        if not fno % (fps*30): print('%8d frames processed (%3.2f min)' % (fno, fno/fps/60))
+        if not fno % (fps*30):
+            print('[INFO', group_number, '] %d frames processed (%3.2f min)' % (fno, fno/fps/60))
 
         _, frame = vs.read()
         frame = imutils.resize(frame, width=resize_width)
@@ -98,18 +97,51 @@ def analyze_video_for_blinks(video_filename, resize_width=720):
 
         eye_ratio_data = eye_ratio_data.append(frame_data, ignore_index=True)
 
-    print('[INFO] completed blink analysis.')
+    print('[INFO', group_number, '] completed blink analysis.')
 
-    print('[INFO] saving to', csv_name)
+    print('[INFO', group_number, '] saving to', csv_name)
     eye_ratio_data.to_csv(csv_name)
 
-    return eye_ratio_data, fps
+    return eye_ratio_data
 
-ap = argparse.ArgumentParser()
-ap.add_argument("-v", "--video", type=str, required=True,
-	help="path to input video file")
-ap.add_argument("-r", "--resize-width", type=int, default=720,
-	help="optional resize width for image before processing, default is 720")
+if __name__ == "__main__":
 
-args = vars(ap.parse_args())
-analyze_video_for_blinks(args['video'], args['resize_width'])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-v", "--video", type=str, required=True,
+        help="path to input video file")
+    ap.add_argument("-r", "--resize-width", type=int, default=720,
+        help="optional resize width for image before processing, default is 720")
+    ap.add_argument("-t", "--threads", type=int, default=0,
+        help="optional number of threads to use, default is all threads")
+
+
+    args = vars(ap.parse_args())
+
+    if not args['threads']: n_threads = multiprocessing.cpu_count()
+    else: n_threads = args['threads']
+
+    total_frames = int(cv2.VideoCapture(args['video']).get(cv2.CAP_PROP_FRAME_COUNT))
+    fps =  cv2.VideoCapture(args['video']).get(cv2.CAP_PROP_FPS)
+    frames_per_thread = total_frames // n_threads
+
+    print('FPS:',fps, '\tTotal Frames:', total_frames, '\tDuration (min): %.2f' % (total_frames/fps/60.0))
+    print('utilizing', n_threads, 'cores.')
+
+    group_numbers = list(range(n_threads))
+
+    dfs = multiprocessing.Pool(n_threads).starmap(analyze_video_for_blinks,
+                       zip( itertools.repeat(args['video']),
+                            itertools.repeat(args['resize_width']),
+                            itertools.repeat(fps),
+                            itertools.repeat(frames_per_thread),
+                            group_numbers
+                          )
+            )
+
+
+    print('MAIN PROCESS GOT ALL FINISHED VALUES.')
+    final_csv_name = args['video'][:-4] + '_eyeratio_final.csv'
+    final_df = pd.concat(dfs)
+    print('Saving all data to', final_csv_name)
+    final_df.to_csv(final_csv_name)
+    print('Completed!')
