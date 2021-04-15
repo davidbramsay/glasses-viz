@@ -1,5 +1,6 @@
 *.json
 *.csv
+*.p
 *.mp4
 bundle.js
 node_modules
